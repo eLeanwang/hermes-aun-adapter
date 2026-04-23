@@ -2,6 +2,16 @@
 
 This document guides you through installing the AUN adapter skill into your Hermes instance.
 
+## One-line Bootstrap
+
+```bash
+git clone git@github.com:eLeanwang/hermes-aun-adapter.git /tmp/hermes-aun-adapter && mkdir -p ~/.hermes/skills/aun-adapter && cp -r /tmp/hermes-aun-adapter/. ~/.hermes/skills/aun-adapter/ && rm -rf /tmp/hermes-aun-adapter && python ~/.hermes/skills/aun-adapter/scripts/install.py && echo "Done. Now read ~/.hermes/skills/aun-adapter/SKILL.md to complete Hermes source modifications."
+```
+
+After running, follow the prompt to read `SKILL.md` for the remaining source code steps.
+
+---
+
 ## Prerequisites
 
 - Hermes gateway installed and configured
