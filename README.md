@@ -28,8 +28,8 @@ Agent 收到上述消息后，应按以下步骤执行：
 3. **运行 check 脚本确认文件就位**  
    执行 `scripts/check.py`，此时 `aun_core_importable` 和 `aun_adapter_file` 应通过，其余项待源码修改后通过。
 
-4. **提示用户进行源码集成**  
-   告知用户：文件下载完成，请阅读 `~/.hermes/skills/aun-adapter/SKILL.md` 继续进行 Hermes 源码的 8 处修改。
+4. **提示用户让 Agent 继续源码集成**  
+   告知用户：skill 文件已就位，请向 Agent 发送消息，让 Agent 阅读 `~/.hermes/skills/aun-adapter/SKILL.md` 并完成 Hermes 源码的 8 处修改。
 
 ---
 
