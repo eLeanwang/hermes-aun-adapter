@@ -131,6 +131,12 @@ Run the following steps in order:
    ```
    (Replace the closing `)` on the previous line with a comma and add this new last entry.)
 
+   **m) `hermes_cli/status.py` — Add AUN to Messaging Platforms display:**
+   Find the `platforms = {` dict in the Messaging Platforms section. After the `"QQBot"` entry, before the closing `}`, add:
+   ```python
+           "AUN": ("AUN_AID", "AUN_HOME_CHANNEL"),
+   ```
+
 3. **Verify installation** by running the check script:
 
    ```bash
@@ -183,6 +189,7 @@ When checks fail (e.g. after a hermes upgrade overwrites registration code):
    - Remove `AUN_ALLOWED_USERS` from `_any_allowlist` check and `AUN_ALLOW_ALL_USERS` from `_allow_all` check in `gateway/run.py`
    - Remove `_setup_aun()` function, `_GATEWAY_PLATFORMS` entry, and `any_messaging` AUN line from `hermes_cli/setup.py`
    - Remove `("aun", ...)` entry from `PLATFORMS` in `hermes_cli/platforms.py`
+   - Remove `"AUN"` entry from `platforms` dict in `hermes_cli/status.py`
 
 3. Optionally remove AUN environment variables from `~/.hermes/.env`:
-   - `AUN_AID`, `AUN_OWNER_AID`, `AUN_ALLOWED_USERS`, `AUN_ALLOW_ALL_USERS`
+   - `AUN_AID`, `AUN_OWNER_AID`, `AUN_HOME_CHANNEL`, `AUN_ALLOWED_USERS`, `AUN_ALLOW_ALL_USERS`

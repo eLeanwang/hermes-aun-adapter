@@ -63,6 +63,7 @@ class AunAdapter(BasePlatformAdapter):
         self._aid: str = config.extra["aid"]
         self._owner_aid: Optional[str] = config.extra.get("owner_aid")
         self._client = None
+        self._chat_id: str = ""
         self._sessions: Dict[str, AunSessionState] = {}
         self._seen_messages: Dict[str, float] = {}  # message_id → expire_time
 
@@ -103,6 +104,7 @@ class AunAdapter(BasePlatformAdapter):
             return False
 
         self._mark_connected()
+        self._chat_id = f"{self._aid}:{self._client._device_id}:"
         logger.info("AUN: connected as %s (gateway: %s)", self._aid, auth["gateway"])
         return True
 
@@ -214,9 +216,12 @@ class AunAdapter(BasePlatformAdapter):
         payload = message.get("payload") or {}
         text = payload.get("text", "") if isinstance(payload, dict) else str(payload)
 
-        # 自发自收过滤
+        # 回声过滤：自己发出的消息会被 gateway fanout 回来，
+        # 只有 sender_aid == self 且 chat_id 不匹配时才丢弃（多实例场景下保留其他实例的消息）
         if sender_aid == self._aid:
-            return
+            msg_chat_id = payload.get("chat_id", "") if isinstance(payload, dict) else ""
+            if not msg_chat_id or not self._chat_id or msg_chat_id != self._chat_id:
+                return
 
         # 消息去重（防 gateway 重推）
         message_id = message.get("message_id", "")

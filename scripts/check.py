@@ -129,7 +129,12 @@ def check_all() -> dict:
         hermes_path, "gateway/run.py", r'"AUN_ALLOW_ALL_USERS"'
     )
 
-    # 14. AUN_AID configured in environment
+    # 14. hermes_cli/status.py has AUN entry
+    results["status_display"] = check_file_contains(
+        hermes_path, "hermes_cli/status.py", r'"AUN"'
+    )
+
+    # 15. AUN_AID configured in environment
     results["aun_aid_configured"] = bool(os.getenv("AUN_AID"))
 
     all_passed = all(results.values())
