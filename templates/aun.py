@@ -6,8 +6,9 @@ Installed as a Hermes skill — see ~/.hermes/skills/networking/aun-adapter/SKIL
 
 import logging
 import os
+import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
 from gateway.config import Platform, PlatformConfig
@@ -30,6 +31,9 @@ AUN_CONTEXT_TEMPLATE = (
     "对端可能是 AI Agent 或人类，保持适当的交互方式；"
     "当认为对话已结束时，在回复末尾添加 [END] 标记\n"
 )
+
+# 消息去重 TTL（秒）
+_SEEN_TTL = 300
 
 
 @dataclass
@@ -60,19 +64,76 @@ class AunAdapter(BasePlatformAdapter):
         self._owner_aid: Optional[str] = config.extra.get("owner_aid")
         self._client = None
         self._sessions: Dict[str, AunSessionState] = {}
+        self._seen_messages: Dict[str, float] = {}  # message_id → expire_time
+
+    # ── 连接 ────────────────────────────────────────────────────
 
     async def connect(self) -> bool:
-        """Connect to AUN gateway via WebSocket."""
+        """Authenticate and connect to AUN gateway.
+
+        Follows aun-cli flow: auth.authenticate() → connect(access_token, gateway).
+        AUN_GATEWAY_URL env var overrides well-known discovery (local dev).
+        """
         from aun_core import AUNClient
 
-        domain = self._aid.split(".", 1)[1]
-        gateway = f"wss://gw.{domain}/ws"
-        self._client = AUNClient(aid=self._aid, gateway=gateway)
+        self._client = AUNClient({"aun_path": os.path.expanduser("~/.aun")})
+
+        # Let SDK auto-discover gateway (incl. port) unless env override is set
+        if gateway_override := os.getenv("AUN_GATEWAY_URL"):
+            self._client._gateway_url = gateway_override
+
+        # 1. 认证：拿 access_token + gateway URL
+        try:
+            auth = await self._authenticate()
+        except Exception as e:
+            logger.error("AUN: authentication failed: %s", e)
+            self._client = None
+            return False
+
+        # 2. 建立 WebSocket 连接
         self._client.on("message.received", self._on_message)
-        await self._client.connect()
+        try:
+            await self._client.connect(
+                {"access_token": auth["access_token"], "gateway": auth["gateway"]},
+                {"auto_reconnect": True},
+            )
+        except Exception as e:
+            logger.error("AUN: connect failed: %s", e)
+            self._client = None
+            return False
+
         self._mark_connected()
-        logger.info("AUN: connected as %s via %s", self._aid, gateway)
+        logger.info("AUN: connected as %s (gateway: %s)", self._aid, auth["gateway"])
         return True
+
+    async def _authenticate(self) -> dict:
+        """Run auth.authenticate() with cert renewal fallback.
+
+        Degradation order on failure:
+          1. authenticate()           — normal path
+          2. renew_cert() → authenticate()   — local cert expired
+          3. create_aid() → authenticate()   — cert unrecoverable, re-register
+        """
+        aid = self._aid
+        try:
+            return await self._client.auth.authenticate({"aid": aid})
+        except Exception as e:
+            msg = str(e)
+            if "local certificate missing" not in msg and "not registered" not in msg:
+                raise
+
+        logger.warning("AUN: cert issue (%s), attempting renew_cert…", msg.split('\n')[0])
+        try:
+            await self._client.auth.renew_cert()
+            return await self._client.auth.authenticate({"aid": aid})
+        except Exception:
+            pass
+
+        logger.warning("AUN: renew_cert failed, attempting create_aid…")
+        await self._client.auth.create_aid({"aid": aid})
+        return await self._client.auth.authenticate({"aid": aid})
+
+    # ── 断开 ────────────────────────────────────────────────────
 
     async def disconnect(self):
         """Disconnect from AUN gateway, sending [END] to active sessions."""
@@ -81,15 +142,18 @@ class AunAdapter(BasePlatformAdapter):
                 for state in self._sessions.values():
                     if state.status == "active":
                         try:
-                            await self._client.send_message(
-                                state.target_aid, "[END]"
-                            )
+                            await self._client.call("message.send", {
+                                "to": state.target_aid,
+                                "payload": {"text": "[END]"},
+                            })
                         except Exception:
                             pass
             await self._client.disconnect()
             self._client = None
         self._mark_disconnected()
         logger.info("AUN: disconnected")
+
+    # ── 发送 ────────────────────────────────────────────────────
 
     async def send(
         self,
@@ -98,18 +162,20 @@ class AunAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message to a peer AID."""
+        """Send a message to a peer AID.
+
+        chat_id may be "aid:device_id:slot_id" (multi-instance format from aun-cli).
+        In that case: to = first segment, payload.chat_id = full chat_id.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         state = self._sessions.get(chat_id)
         if state:
-            # Check outbound end markers
             for marker in END_MARKERS:
                 if marker in content:
                     state.status = "ended"
                     break
-            # Track consecutive empty replies
             if not content.strip():
                 state.consecutive_empty += 1
                 if state.consecutive_empty >= CONSECUTIVE_EMPTY_THRESHOLD:
@@ -119,7 +185,14 @@ class AunAdapter(BasePlatformAdapter):
             else:
                 state.consecutive_empty = 0
 
-        await self._client.send_message(chat_id, content)
+        # Multi-instance routing: split "aid:device_id:slot_id" → to=aid
+        colon_idx = chat_id.find(":")
+        target_aid = chat_id[:colon_idx] if colon_idx > 0 else chat_id
+        payload: Dict[str, Any] = {"text": content}
+        if colon_idx > 0:
+            payload["chat_id"] = chat_id
+
+        await self._client.call("message.send", {"to": target_aid, "payload": payload})
         return SendResult(success=True, message_id=str(uuid.uuid4()))
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -130,49 +203,73 @@ class AunAdapter(BasePlatformAdapter):
         """AUN has no typing indicator — no-op."""
         pass
 
+    # ── 接收 ────────────────────────────────────────────────────
+
     async def _on_message(self, message):
         """Handle inbound AUN message."""
-        sender_aid = message.sender
-        text = message.payload.get("text", "")
+        if not isinstance(message, dict):
+            return
 
-        # Auto-ack delivery
-        await message.ack()
+        sender_aid = message.get("from") or message.get("sender_aid", "")
+        payload = message.get("payload") or {}
+        text = payload.get("text", "") if isinstance(payload, dict) else str(payload)
+
+        # 自发自收过滤
+        if sender_aid == self._aid:
+            return
+
+        # 消息去重（防 gateway 重推）
+        message_id = message.get("message_id", "")
+        if message_id:
+            now = time.monotonic()
+            if message_id in self._seen_messages and self._seen_messages[message_id] > now:
+                return
+            self._seen_messages[message_id] = now + _SEEN_TTL
+            # 清理过期条目（顺手，避免无限增长）
+            if len(self._seen_messages) > 500:
+                self._seen_messages = {
+                    k: v for k, v in self._seen_messages.items() if v > now
+                }
+
+        # Multi-instance routing: payload.chat_id 优先作为 session key
+        chat_id = (
+            str(payload["chat_id"])
+            if isinstance(payload, dict) and payload.get("chat_id")
+            else sender_aid
+        )
 
         # Check inbound end markers
         for marker in END_MARKERS:
             if marker in text:
-                state = self._sessions.get(sender_aid)
+                state = self._sessions.get(chat_id)
                 if state:
                     state.status = "ended"
                 if not SEND_ACK_ON_RECEIVE_END:
-                    return  # Don't forward to agent
+                    return
                 break
 
         # Create or restore session state
         inject_context = False
-        if sender_aid not in self._sessions:
-            self._sessions[sender_aid] = AunSessionState(
+        if chat_id not in self._sessions:
+            self._sessions[chat_id] = AunSessionState(
                 session_id=str(uuid.uuid4()),
-                target_aid=sender_aid,
+                target_aid=chat_id,
                 is_owner=(sender_aid == self._owner_aid),
             )
             inject_context = True
 
-        state = self._sessions[sender_aid]
+        state = self._sessions[chat_id]
         if state.status == "ended":
-            # New message on ended session → reset
             state.status = "active"
             state.consecutive_empty = 0
             state.session_id = str(uuid.uuid4())
             inject_context = True
 
-        # Inject AUN context on first message of each session
         if inject_context:
             text = AUN_CONTEXT_TEMPLATE.format(peer_aid=sender_aid) + "\n" + text
 
-        # Build SessionSource and dispatch
         source = self.build_source(
-            chat_id=sender_aid,
+            chat_id=chat_id,
             user_id=sender_aid,
             user_name=sender_aid,
             chat_type="dm",

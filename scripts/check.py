@@ -21,6 +21,7 @@ def find_hermes_project() -> Path:
             return p
     candidates = [
         Path.home() / "projects" / "hermes-agent",
+        Path.home() / ".hermes" / "hermes-agent",
         Path.home() / "hermes-agent",
         Path("/opt/hermes-agent"),
     ]
@@ -113,7 +114,22 @@ def check_all() -> dict:
         hermes_path, "hermes_cli/setup.py", r'AUN_AID'
     )
 
-    # 11. AUN_AID configured in environment
+    # 11. hermes_cli/platforms.py has AUN entry
+    results["platforms_registry"] = check_file_contains(
+        hermes_path, "hermes_cli/platforms.py", r'"aun"'
+    )
+
+    # 12. _any_allowlist includes AUN_ALLOWED_USERS
+    results["any_allowlist_entry"] = check_file_contains(
+        hermes_path, "gateway/run.py", r'"AUN_ALLOWED_USERS"'
+    )
+
+    # 13. _allow_all includes AUN_ALLOW_ALL_USERS
+    results["allow_all_entry"] = check_file_contains(
+        hermes_path, "gateway/run.py", r'"AUN_ALLOW_ALL_USERS"'
+    )
+
+    # 14. AUN_AID configured in environment
     results["aun_aid_configured"] = bool(os.getenv("AUN_AID"))
 
     all_passed = all(results.values())

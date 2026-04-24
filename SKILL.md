@@ -83,72 +83,21 @@ Run the following steps in order:
    ```
 
    **g) `hermes_cli/setup.py` — Add `_setup_aun()` function:**
-   Add this function before the `_GATEWAY_PLATFORMS` list definition:
+   Add this thin delegator before the `_GATEWAY_PLATFORMS` list definition. All setup logic lives in the skill-owned `scripts/config.py` so hermes source stays minimal:
    ```python
    def _setup_aun():
-       """Configure AUN (Agent Union Network) credentials."""
-       print_header("AUN (Agent Union Network)")
-       existing = get_env_value("AUN_AID")
-       if existing:
-           print_info("AUN: already configured")
-           if not prompt_yes_no("Reconfigure AUN?", False):
-               return
-
-       # Install aun-core if missing
-       try:
-           __import__("aun_core")
-           print_info("aun-core: already installed")
-       except ImportError:
-           print_info("Installing aun-core...")
-           import subprocess, shutil
-           uv_bin = shutil.which("uv")
-           if uv_bin:
-               result = subprocess.run(
-                   [uv_bin, "pip", "install", "--python", sys.executable, "aun-core"],
-                   capture_output=True, text=True,
-               )
-           else:
-               result = subprocess.run(
-                   [sys.executable, "-m", "pip", "install", "aun-core"],
-                   capture_output=True, text=True,
-               )
-           if result.returncode == 0:
-               print_success("aun-core installed")
-           else:
-               print_warning("Install failed — run manually: pip install aun-core")
-               if result.stderr:
-                   print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
-
-       print_info("AUN is a secure agent-to-agent communication network.")
-       print_info("   Your Agent ID (AID) is a cryptographic identity like 'hermes.agentid.pub'")
-       print_info("   The AID keypair is stored locally and managed by the SDK.")
-       print()
-       aid = prompt("Your Agent ID (AID)")
-       if not aid:
-           print_warning("AUN_AID is required. Skipping AUN setup.")
+       """Configure AUN (Agent Union Network) platform."""
+       import importlib.util, os
+       _skill_config = os.path.expanduser("~/.hermes/skills/aun-adapter/scripts/config.py")
+       if not os.path.exists(_skill_config):
+           print_error("AUN skill not installed. Run:")
+           print_info("  python ~/.hermes/skills/aun-adapter/scripts/install.py")
            return
-       save_env_value("AUN_AID", aid)
-       print_success("AUN Agent ID saved")
-
-       print()
-       print_info("Owner: Optionally set an owner Agent ID for admin commands.")
-       owner_aid = prompt("Owner Agent ID (leave empty to skip)")
-       if owner_aid:
-           save_env_value("AUN_OWNER_AID", owner_aid)
-           print_success("AUN owner configured")
-
-       print()
-       print_info("Security: Restrict which agents can communicate with you")
-       print_info("   Agent IDs look like username.agentid.pub")
-       print()
-       allowed = prompt("Allowed Agent IDs (comma-separated, leave empty for open access)")
-       if allowed:
-           save_env_value("AUN_ALLOWED_USERS", allowed.replace(" ", ""))
-           print_success("AUN allowlist configured")
-       else:
-           print_info("No allowlist set - any agent on AUN can message you!")
-
-       print()
+       spec = importlib.util.spec_from_file_location("aun_config", _skill_config)
+       mod = importlib.util.module_from_spec(spec)
+       spec.loader.exec_module(mod)
+       mod.run(print_header, print_info, print_success, print_error, print_warning,
+               prompt, prompt_yes_no, get_env_value, save_env_value)
    ```
 
    **h) `hermes_cli/setup.py` — Register in `_GATEWAY_PLATFORMS`:**
@@ -162,6 +111,25 @@ Run the following steps in order:
    ```python
            or get_env_value("AUN_AID")
    ```
+
+   **j) `hermes_cli/platforms.py` — Add AUN to `PLATFORMS` registry:**
+   Find the `PLATFORMS: OrderedDict` definition. After the `qqbot` entry, before `webhook`, add:
+   ```python
+       ("aun",            PlatformInfo(label="🔗 AUN",             default_toolset="hermes-aun")),
+   ```
+
+   **k) `gateway/run.py` — Add `AUN_ALLOWED_USERS` to `_any_allowlist` check:**
+   Find the `_any_allowlist = any(` block (around the gateway startup section). After the last `*_ALLOWED_USERS` entry (currently `QQ_ALLOWED_USERS`), before `GATEWAY_ALLOWED_USERS`, add:
+   ```python
+                       "AUN_ALLOWED_USERS",
+   ```
+
+   **l) `gateway/run.py` — Add `AUN_ALLOW_ALL_USERS` to `_allow_all` check:**
+   Find the `_allow_all = ` block immediately after `_any_allowlist`. After the last `*_ALLOW_ALL_USERS` entry (currently `QQ_ALLOW_ALL_USERS`), add:
+   ```python
+                       "AUN_ALLOW_ALL_USERS")
+   ```
+   (Replace the closing `)` on the previous line with a comma and add this new last entry.)
 
 3. **Verify installation** by running the check script:
 
@@ -212,7 +180,9 @@ When checks fail (e.g. after a hermes upgrade overwrites registration code):
    - Remove AUN env override block from `_apply_env_overrides()` in `gateway/config.py`
    - Remove AUN branch from `_create_adapter()` in `gateway/run.py`
    - Remove `Platform.AUN` entries from `platform_env_map` and `platform_allow_all_map` in `gateway/run.py`
+   - Remove `AUN_ALLOWED_USERS` from `_any_allowlist` check and `AUN_ALLOW_ALL_USERS` from `_allow_all` check in `gateway/run.py`
    - Remove `_setup_aun()` function, `_GATEWAY_PLATFORMS` entry, and `any_messaging` AUN line from `hermes_cli/setup.py`
+   - Remove `("aun", ...)` entry from `PLATFORMS` in `hermes_cli/platforms.py`
 
 3. Optionally remove AUN environment variables from `~/.hermes/.env`:
    - `AUN_AID`, `AUN_OWNER_AID`, `AUN_ALLOWED_USERS`, `AUN_ALLOW_ALL_USERS`
